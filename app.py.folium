@@ -1,0 +1,184 @@
+import pandas as pd
+import streamlit as st
+import folium
+from streamlit_folium import st_folium
+
+st.set_page_config(layout="wide")
+st.title("🗳️ Canvassy")
+
+show_majority = st.checkbox("Show Majority Areas Only")
+
+@st.cache_data
+def load_data():
+    return pd.read_csv("Address_with_coords.csv")
+
+# -------------------------
+# Load Data
+# -------------------------
+df = load_data()
+df = df.dropna(subset=["Latitude", "Longitude"])
+
+if df.empty:
+    st.warning("No data available")
+    st.stop()
+
+# -------------------------
+# Normalize Party
+# -------------------------
+def normalize_party(p):
+    p = str(p).upper().strip()
+    if p.startswith("DEM"):
+        return "D"
+    elif p.startswith("REP"):
+        return "R"
+    elif p.startswith("UND"):
+        return "U"
+    else:
+        return "U"
+
+df["Party"] = df["Party"].apply(normalize_party)
+
+# -------------------------
+# Remove UND if D/R exists per Address
+# -------------------------
+def resolve_party(series):
+    parties = set(series)
+    if "D" in parties:
+        return "D"
+    elif "R" in parties:
+        return "R"
+    else:
+        return "U"
+
+df = (
+    df.groupby("Address", as_index=False)
+      .agg({
+          "Latitude": "first",
+          "Longitude": "first",
+          "City": "first",
+          "Party": resolve_party
+      })
+)
+
+# -------------------------
+# Majority Mode
+# -------------------------
+if show_majority:
+
+    # Extract street name (remove house number)
+    df["Street"] = df["Address"].apply(lambda x: " ".join(str(x).split()[1:]))
+
+    def get_majority(series):
+        counts = series.value_counts()
+
+        d = counts.get("D", 0)
+        r = counts.get("R", 0)
+
+        if d > r:
+            return "D"
+        elif r > d:
+            return "R"
+        else:
+            return "MIXED"
+
+    df = (
+        df.groupby("Street")
+          .agg({
+              "Latitude": "mean",
+              "Longitude": "mean",
+              "City": "first",
+              "Party": get_majority
+          })
+          .reset_index()
+    )
+
+# -------------------------
+# Map
+# -------------------------
+center_lat = df["Latitude"].mean()
+center_lon = df["Longitude"].mean()
+
+if pd.isna(center_lat) or pd.isna(center_lon):
+    center_lat, center_lon = 42.0, -71.0  # fallback
+
+m = folium.Map(location=[center_lat, center_lon], zoom_start=11)
+
+def get_color(party):
+    if party == "D":
+        return "blue"
+    elif party == "R":
+        return "red"
+    else:
+        return "gray"
+
+# -------------------------
+# Plot Markers
+# -------------------------
+for _, row in df.iterrows():
+
+    # Label for popup
+    if show_majority:
+        label = row["Street"]
+    else:
+        label = row["Address"]
+
+    popup = f"{label}, {row['City']} ({row['Party']})"
+
+    # -------------------------
+    # Majority mode markers
+    # -------------------------
+    if show_majority and row["Party"] == "MIXED":
+
+        folium.Marker(
+            [row["Latitude"], row["Longitude"]],
+            icon=folium.DivIcon(
+                html="""
+                <div style="
+                    width:14px;
+                    height:14px;
+                    border-radius:50%;
+                    background: linear-gradient(to right, blue 50%, red 50%);
+                    border:1px solid black;
+                "></div>
+                """
+            ),
+            popup=popup
+        ).add_to(m)
+
+    else:
+        folium.CircleMarker(
+            location=[row["Latitude"], row["Longitude"]],
+            radius=6,
+            color=get_color(row["Party"]),
+            fill=True,
+            fill_color=get_color(row["Party"]),
+            fill_opacity=0.8,
+            popup=popup
+        ).add_to(m)
+
+    # -------------------------
+    # House numbers ONLY in normal mode
+    # -------------------------
+    if not show_majority:
+        house_number = str(row["Address"]).split()[0]
+
+        folium.Marker(
+            [row["Latitude"], row["Longitude"]],
+            icon=folium.DivIcon(
+                html=f"""
+                <div style="
+                    font-size:8px;
+                    font-weight:bold;
+                    color:white;
+                    text-align:center;
+                ">
+                    {house_number}
+                </div>
+                """
+            )
+        ).add_to(m)
+
+# -------------------------
+# Render Map
+# -------------------------
+st_folium(m, width=1200, height=700)
