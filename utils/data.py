@@ -229,6 +229,8 @@ def save_house_details(
         if col not in full_df.columns:
             full_df[col] = ""
 
+    full_df["CanvassedDate"] = full_df["CanvassedDate"].fillna("").astype(str)
+
     full_df.loc[
         full_df["Address"] == address,
         "Canvassed"
